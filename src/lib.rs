@@ -161,44 +161,10 @@ struct Route<T> {
     handler: Box<Handler<T>>,
 }
 
-/// Defines the methods and paths that map to handlers.
-pub struct Routes<T> {
-    routes: Vec<Route<T>>,
-}
-
-impl<T> Routes<T> {
-    /// Create new `Routes`.
-    pub fn new() -> Routes<T> {
-        Routes { routes: Vec::new() }
-    }
-
-    /// Add a new route. The basic format is `"METHOD /path"`. The
-    /// path can contain parameters that start with a colon, for
-    /// example `"/resource/:key"`; these parameters act as wild cards
-    /// that can match any single path segment.
-    #[throws]
-    pub fn add(&mut self, route: &str, handler: &'static Handler<T>) {
-        let mut iter = route.split_whitespace();
-        let method = iter.next().ok_or_else(|| anyhow!("missing method"))?;
-        let path = iter.next().ok_or_else(|| anyhow!("missing path"))?;
-        self.routes.push(Route {
-            method: method.into(),
-            path: path.parse()?,
-            handler: Box::new(handler),
-        });
-    }
-}
-
-impl<T> Default for Routes<T> {
-    fn default() -> Routes<T> {
-        Routes { routes: Vec::new() }
-    }
-}
-
 #[throws]
 fn handle_connection<T>(
     stream: TcpStream,
-    routes: Arc<Routes<T>>,
+    routes: Arc<Vec<Route<T>>>,
     state: Arc<RwLock<T>>,
 ) {
     let mut stream = BufStream::new(stream);
@@ -239,7 +205,7 @@ fn handle_connection<T>(
         }
     }
 
-    for route in &routes.routes {
+    for route in &*routes {
         if method != route.method {
             continue;
         }
@@ -292,9 +258,7 @@ fn handle_connection<T>(
 /// HTTP 1.1 server.
 pub struct Server<T> {
     address: SocketAddr,
-    // TODO: remove the Routes struct, just put the vec here
-    routes: Routes<T>,
-
+    routes: Vec<Route<T>>,
     state: Arc<RwLock<T>>,
 }
 
@@ -304,7 +268,7 @@ impl<T: Send + Sync + 'static> Server<T> {
     pub fn new(address: &str, state: T) -> Server<T> {
         Server {
             address: address.parse::<SocketAddr>()?,
-            routes: Routes::new(),
+            routes: Vec::new(),
             state: Arc::new(RwLock::new(state)),
         }
     }
@@ -315,7 +279,14 @@ impl<T: Send + Sync + 'static> Server<T> {
     /// that can match any single path segment.
     #[throws]
     pub fn route(&mut self, route: &str, handler: &'static Handler<T>) {
-        self.routes.add(route, handler)?
+        let mut iter = route.split_whitespace();
+        let method = iter.next().ok_or_else(|| anyhow!("missing method"))?;
+        let path = iter.next().ok_or_else(|| anyhow!("missing path"))?;
+        self.routes.push(Route {
+            method: method.into(),
+            path: path.parse()?,
+            handler: Box::new(handler),
+        });
     }
 
     /// Start the server.
