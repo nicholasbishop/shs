@@ -3,6 +3,11 @@ name = "shs"
 version = "0.1.0"
 authors = ["Nicholas Bishop <nicholasbishop@gmail.com>"]
 edition = "2018"
+categories = ["web-programming::http-server"]
+keywords = ["server", "http"]
+license = "Apache-2.0"
+readme = "README.md"
+description = "Easy-to-use non-async HTTP server"
 
 [dependencies]
 anyhow = "1.0"
