@@ -15,6 +15,7 @@ use std::thread;
 pub struct Request<T> {
     body: String,
     status: StatusCode,
+    resp_headers: HashMap<String, String>,
 
     path_params: HashMap<String, String>,
     state: Arc<T>,
@@ -25,10 +26,19 @@ impl<'a, T> Request<T> {
     pub fn write_json<S: Serialize>(&mut self, body: &S) {
         let json = serde_json::to_string(body)?;
         self.body.push_str(&json);
+        self.set_content_type("application/json");
     }
 
     pub fn set_status(&mut self, status: StatusCode) {
         self.status = status;
+    }
+
+    pub fn set_header(&mut self, name: &str, value: &str) {
+        self.resp_headers.insert(name.into(), value.into());
+    }
+
+    pub fn set_content_type(&mut self, value: &str) {
+        self.set_header("Content-Type", value);
     }
 
     #[throws]
@@ -166,6 +176,7 @@ fn handle_connection<T>(
             let mut req = Request {
                 body: String::new(),
                 status: StatusCode::OK,
+                resp_headers: HashMap::new(),
                 path_params,
                 state,
             };
@@ -182,6 +193,9 @@ fn handle_connection<T>(
                 )
                 .as_bytes(),
             )?;
+            for (name, value) in req.resp_headers {
+                stream.write(format!("{}: {}\n", name, value).as_bytes())?;
+            }
             stream.write(
                 format!("Content-Length: {}\n", req.body.len()).as_bytes(),
             )?;
