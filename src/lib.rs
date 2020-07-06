@@ -172,7 +172,10 @@ impl<T> Routes<T> {
         Routes { routes: Vec::new() }
     }
 
-    /// Add a new route.
+    /// Add a new route. The basic format is `"METHOD /path"`. The
+    /// path can contain parameters that start with a colon, for
+    /// example `"/resource/:key"`; these parameters act as wild cards
+    /// that can match any single path segment.
     #[throws]
     pub fn add(&mut self, route: &str, handler: &'static Handler<T>) {
         let mut iter = route.split_whitespace();
