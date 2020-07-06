@@ -5,7 +5,6 @@ use shs::{serve, Request, Routes};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
-#[derive(Clone)]
 struct State {
     dict: HashMap<String, String>,
 }
