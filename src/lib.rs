@@ -13,14 +13,14 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 
 pub struct Request<T> {
+    state: Arc<RwLock<T>>,
+
+    path_params: HashMap<String, String>,
     req_body: Vec<u8>,
 
     status: StatusCode,
     resp_body: Vec<u8>,
     resp_headers: HashMap<String, String>,
-
-    path_params: HashMap<String, String>,
-    state: Arc<RwLock<T>>,
 }
 
 impl<T: Send + Sync> Request<T> {
@@ -216,14 +216,14 @@ fn handle_connection<T>(
 
         if let Some(path_params) = match_path(&path, &route.path) {
             let mut req = Request {
-                // TODO
+                state,
+
+                path_params,
                 req_body,
 
                 resp_body: Vec::new(),
                 status: StatusCode::OK,
                 resp_headers: HashMap::new(),
-                path_params,
-                state,
             };
             if let Err(err) = (route.handler)(&mut req) {
                 error!("{}", err);
