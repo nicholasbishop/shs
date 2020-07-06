@@ -41,12 +41,26 @@ impl<T: Send + Sync> Request<T> {
         serde_json::from_slice(&self.req_body)?
     }
 
+    /// Write the input as the response body. This also sets the
+    /// `Content-Type` to `application/octet-stream`.
+    pub fn write_bytes(&mut self, body: &[u8]) {
+        self.resp_body = body.to_vec();
+        self.set_content_type("application/octet-stream");
+    }
+
     /// Serialize the input as the response body. This also sets the
     /// `Content-Type` to `application/json`.
     #[throws]
     pub fn write_json<S: Serialize>(&mut self, body: &S) {
         self.resp_body = serde_json::to_vec(body)?;
         self.set_content_type("application/json");
+    }
+
+    /// Write the input as the response body with utf-8 encoding. This
+    /// also sets the `Content-Type` to `text/plain; charset=UTF-8`.
+    pub fn write_text(&mut self, body: &str) {
+        self.resp_body = body.as_bytes().to_vec();
+        self.set_content_type("text/plain; charset=UTF-8");
     }
 
     /// Set the response status code.
