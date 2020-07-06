@@ -1,5 +1,8 @@
 # shs (simple http server)
 
+[![crates.io](https://img.shields.io/crates/v/shs.svg)](https://crates.io/crates/shs)
+[![Documentation](https://docs.rs/shs/badge.svg)](https://docs.rs/shs)
+
 The shs crate provides an easy-to-use non-async HTTP server.
 
 Example:
