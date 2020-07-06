@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Error};
 use bufstream::BufStream;
 use fehler::{throw, throws};
+pub use http::StatusCode;
 use log::error;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -13,6 +14,7 @@ use std::thread;
 
 pub struct Request<T> {
     body: String,
+    status: StatusCode,
 
     path_params: HashMap<String, String>,
     state: Arc<T>,
@@ -23,6 +25,10 @@ impl<'a, T> Request<T> {
     pub fn write_json<S: Serialize>(&mut self, body: &S) {
         let json = serde_json::to_string(body)?;
         self.body.push_str(&json);
+    }
+
+    pub fn set_status(&mut self, status: StatusCode) {
+        self.status = status;
     }
 
     #[throws]
@@ -159,15 +165,28 @@ fn handle_connection<T>(
         if let Some(path_params) = match_path(&path, &route.path) {
             let mut req = Request {
                 body: String::new(),
+                status: StatusCode::OK,
                 path_params,
                 state,
             };
             if let Err(err) = (route.handler)(&mut req) {
                 error!("{}", err);
-            // TODO: handle error
-            } else {
-                // TODO: handle success
+                req.body = "internal server error".into();
+                req.status = StatusCode::INTERNAL_SERVER_ERROR;
             }
+            stream.write(
+                format!(
+                    "HTTP/1.1 {} {}\n",
+                    req.status.as_u16(),
+                    req.status.canonical_reason().unwrap_or("")
+                )
+                .as_bytes(),
+            )?;
+            stream.write(
+                format!("Content-Length: {}\n", req.body.len()).as_bytes(),
+            )?;
+            stream.write(b"\n")?;
+            stream.write(req.body.as_bytes())?;
             break;
         }
     }
