@@ -17,6 +17,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::thread;
+use url::Url;
 
 type HeaderName = unicase::UniCase<String>;
 
@@ -29,6 +30,7 @@ pub struct Request<T> {
     path_params: HashMap<String, String>,
     req_headers: HashMap<HeaderName, String>,
     req_body: Vec<u8>,
+    url: Url,
 
     status: StatusCode,
     resp_body: Vec<u8>,
@@ -36,6 +38,11 @@ pub struct Request<T> {
 }
 
 impl<T: Send + Sync> Request<T> {
+    /// Get the request URL.
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
     /// Get the request headers.
     pub fn headers(&self) -> &HashMap<HeaderName, String> {
         &self.req_headers
@@ -205,7 +212,7 @@ fn handle_connection<T>(
         let mut line = String::new();
         stream.read_line(&mut line).context("failed to read line")?;
 
-        let mut parts = line.split(':');
+        let mut parts = line.splitn(2, ':');
         if let Some(name) = parts.next() {
             let value = parts.next().unwrap_or("");
             headers.insert(name.into(), value.trim().to_string());
@@ -224,6 +231,13 @@ fn handle_connection<T>(
         }
     }
 
+    let host = headers
+        .get(&HeaderName::new("host".into()))
+        .ok_or_else(|| anyhow!("missing host header"))?;
+    let mut url = Url::parse(&format!("http://{}", host))
+        .with_context(|| format!("failed to parse host {}", host))?;
+    url.set_path(parts[1]);
+
     for route in &*routes {
         if method != route.method {
             continue;
@@ -236,6 +250,7 @@ fn handle_connection<T>(
                 path_params,
                 req_headers: headers,
                 req_body,
+                url,
 
                 resp_body: Vec::new(),
                 status: StatusCode::Ok,
