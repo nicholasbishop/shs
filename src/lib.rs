@@ -3,34 +3,46 @@ use bufstream::BufStream;
 use fehler::{throw, throws};
 pub use http::StatusCode;
 use log::error;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io::{BufRead, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::thread;
 
 pub struct Request<T> {
-    body: String,
+    req_body: Vec<u8>,
+
     status: StatusCode,
+    // TODO make this a Vec<u8>
+    resp_body: String,
     resp_headers: HashMap<String, String>,
 
     path_params: HashMap<String, String>,
-    state: Arc<T>,
+    state: Arc<RwLock<T>>,
 }
 
-impl<'a, T> Request<T> {
+impl<T: Send + Sync> Request<T> {
+    #[throws]
+    pub fn read_json<'a, D: Deserialize<'a>>(&'a self) -> D {
+        serde_json::from_slice(&self.req_body)?
+    }
+
     #[throws]
     pub fn write_json<S: Serialize>(&mut self, body: &S) {
         let json = serde_json::to_string(body)?;
-        self.body.push_str(&json);
+        self.resp_body.push_str(&json);
         self.set_content_type("application/json");
     }
 
     pub fn set_status(&mut self, status: StatusCode) {
         self.status = status;
+    }
+
+    pub fn set_not_found(&mut self) {
+        self.set_status(StatusCode::NOT_FOUND);
     }
 
     pub fn set_header(&mut self, name: &str, value: &str) {
@@ -56,8 +68,30 @@ impl<'a, T> Request<T> {
             .with_context(|| format!("failed to parse path param {}", name))?
     }
 
-    pub fn state(&self) -> &T {
-        &self.state
+    #[throws]
+    pub fn with_state<R, F>(&self, f: F) -> R
+    where
+        F: Fn(&T) -> R,
+    {
+        match self.state.read() {
+            Ok(guard) => f(&guard),
+            // Can't propagate with `?` here because RwLockReadGuard
+            // cannot be sent between threads
+            Err(err) => throw!(anyhow!("failed to lock state guard: {}", err)),
+        }
+    }
+
+    #[throws]
+    pub fn with_state_mut<R, F>(&self, f: F) -> R
+    where
+        F: Fn(&mut T) -> R,
+    {
+        match self.state.write() {
+            Ok(mut guard) => f(&mut guard),
+            // Can't propagate with `?` here because RwLockWriteGuard
+            // cannot be sent between threads
+            Err(err) => throw!(anyhow!("failed to lock state guard: {}", err)),
+        }
     }
 }
 
@@ -135,7 +169,7 @@ impl<T> Default for Routes<T> {
 fn handle_connection<T>(
     stream: TcpStream,
     routes: Arc<Routes<T>>,
-    state: Arc<T>,
+    state: Arc<RwLock<T>>,
 ) {
     let mut stream = BufStream::new(stream);
     let mut line = String::new();
@@ -174,7 +208,10 @@ fn handle_connection<T>(
 
         if let Some(path_params) = match_path(&path, &route.path) {
             let mut req = Request {
-                body: String::new(),
+                // TODO
+                req_body: Vec::new(),
+
+                resp_body: String::new(),
                 status: StatusCode::OK,
                 resp_headers: HashMap::new(),
                 path_params,
@@ -182,7 +219,7 @@ fn handle_connection<T>(
             };
             if let Err(err) = (route.handler)(&mut req) {
                 error!("{}", err);
-                req.body = "internal server error".into();
+                req.resp_body = "internal server error".into();
                 req.status = StatusCode::INTERNAL_SERVER_ERROR;
             }
             stream.write(
@@ -197,19 +234,30 @@ fn handle_connection<T>(
                 stream.write(format!("{}: {}\n", name, value).as_bytes())?;
             }
             stream.write(
-                format!("Content-Length: {}\n", req.body.len()).as_bytes(),
+                format!("Content-Length: {}\n", req.resp_body.len()).as_bytes(),
             )?;
             stream.write(b"\n")?;
-            stream.write(req.body.as_bytes())?;
-            break;
+            stream.write(req.resp_body.as_bytes())?;
+            return;
         }
     }
+
+    // No matching route found
+    let status = StatusCode::NOT_FOUND;
+    stream.write(
+        format!(
+            "HTTP/1.1 {} {}\n\n",
+            status.as_u16(),
+            status.canonical_reason().unwrap_or("")
+        )
+        .as_bytes(),
+    )?;
 }
 
 pub fn serve<T: Send + Sync + 'static>(
     address: &str,
     routes: Routes<T>,
-    state: Arc<T>,
+    state: Arc<RwLock<T>>,
 ) -> Result<(), Error> {
     let socket = address.parse::<SocketAddr>()?;
     let listener = TcpListener::bind(socket)?;

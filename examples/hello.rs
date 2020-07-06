@@ -1,26 +1,45 @@
 use anyhow::Error;
 use fehler::throws;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use shs::{serve, Request, Routes};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
 #[derive(Clone)]
 struct State {
-    name: String,
+    dict: HashMap<String, String>,
 }
 
 #[derive(Serialize)]
-struct MyResp {
-    name: String,
+struct GetDictResp {
+    key: String,
     value: String,
 }
 
 #[throws]
-fn get_value(req: &mut Request<State>) {
-    let value = req.path_param("value")?;
-    req.write_json(&MyResp {
-        name: req.state().name.clone(),
-        value,
+fn get_dict(req: &mut Request<State>) {
+    let key: String = req.path_param("key")?;
+    if let Some(value) = req.with_state(|s| s.dict.get(&key).cloned())? {
+        req.write_json(&GetDictResp {
+            key: key.clone(),
+            value: value.to_string(),
+        })?;
+    } else {
+        req.set_not_found();
+    }
+}
+
+#[derive(Deserialize)]
+struct PostDictReq {
+    key: String,
+    value: String,
+}
+
+#[throws]
+fn post_dict(req: &mut Request<State>) {
+    let body: PostDictReq = req.read_json()?;
+    req.with_state_mut(|s| {
+        s.dict.insert(body.key.clone(), body.value.clone())
     })?;
 }
 
@@ -29,12 +48,13 @@ fn main() {
     simple_logging::log_to_stderr(log::LevelFilter::Info);
 
     let mut routes = Routes::new();
-    routes.add("GET /value/:value", &get_value)?;
+    routes.add("GET /dict/:key", &get_dict)?;
+    routes.add("POST /dict", &post_dict)?;
     serve(
         "127.0.0.1:1234",
         routes,
-        Arc::new(State {
-            name: "hello-example".into(),
-        }),
+        Arc::new(RwLock::new(State {
+            dict: HashMap::new(),
+        })),
     )?;
 }
