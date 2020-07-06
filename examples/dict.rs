@@ -1,10 +1,10 @@
 use anyhow::Error;
 use fehler::throws;
 use serde::{Deserialize, Serialize};
-use shs::{serve, Request, Routes};
+use shs::{Request, Server};
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
 
+#[derive(Default)]
 struct State {
     dict: HashMap<String, String>,
 }
@@ -46,14 +46,8 @@ fn post_dict(req: &mut Request<State>) {
 fn main() {
     simple_logging::log_to_stderr(log::LevelFilter::Info);
 
-    let mut routes = Routes::new();
-    routes.add("GET /dict/:key", &get_dict)?;
-    routes.add("POST /dict", &post_dict)?;
-    serve(
-        "127.0.0.1:1234",
-        routes,
-        Arc::new(RwLock::new(State {
-            dict: HashMap::new(),
-        })),
-    )?;
+    let mut server = Server::new("127.0.0.1:1234", State::default())?;
+    server.route("GET /dict/:key", &get_dict)?;
+    server.route("POST /dict", &post_dict)?;
+    server.launch()?;
 }

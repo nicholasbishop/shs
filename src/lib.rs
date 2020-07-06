@@ -289,30 +289,57 @@ fn handle_connection<T>(
     )?;
 }
 
-/// Start the server.
-pub fn serve<T: Send + Sync + 'static>(
-    address: &str,
+/// HTTP 1.1 server.
+pub struct Server<T> {
+    address: SocketAddr,
+    // TODO: remove the Routes struct, just put the vec here
     routes: Routes<T>,
-    state: Arc<RwLock<T>>,
-) -> Result<(), Error> {
-    let socket = address.parse::<SocketAddr>()?;
-    let listener = TcpListener::bind(socket)?;
-    let routes = Arc::new(routes);
-    loop {
-        let (tcp_stream, _addr) = listener.accept()?;
-        let routes = routes.clone();
-        let state = state.clone();
 
-        // Handle the request in a new thread
-        if let Err(err) = thread::Builder::new()
-            .name("shs-handler".into())
-            .spawn(move || {
-                if let Err(err) = handle_connection(tcp_stream, routes, state) {
-                    error!("{}", err);
-                }
-            })
-        {
-            error!("failed to spawn thread: {}", err);
+    state: Arc<RwLock<T>>,
+}
+
+impl<T: Send + Sync + 'static> Server<T> {
+    /// Create a new Server.
+    #[throws]
+    pub fn new(address: &str, state: T) -> Server<T> {
+        Server {
+            address: address.parse::<SocketAddr>()?,
+            routes: Routes::new(),
+            state: Arc::new(RwLock::new(state)),
+        }
+    }
+
+    /// Add a new route. The basic format is `"METHOD /path"`. The
+    /// path can contain parameters that start with a colon, for
+    /// example `"/resource/:key"`; these parameters act as wild cards
+    /// that can match any single path segment.
+    #[throws]
+    pub fn route(&mut self, route: &str, handler: &'static Handler<T>) {
+        self.routes.add(route, handler)?
+    }
+
+    /// Start the server.
+    pub fn launch(self) -> Result<(), Error> {
+        let listener = TcpListener::bind(self.address)?;
+        let routes = Arc::new(self.routes);
+        loop {
+            let (tcp_stream, _addr) = listener.accept()?;
+            let routes = routes.clone();
+            let state = self.state.clone();
+
+            // Handle the request in a new thread
+            if let Err(err) = thread::Builder::new()
+                .name("shs-handler".into())
+                .spawn(move || {
+                    if let Err(err) =
+                        handle_connection(tcp_stream, routes, state)
+                    {
+                        error!("{}", err);
+                    }
+                })
+            {
+                error!("failed to spawn thread: {}", err);
+            }
         }
     }
 }
