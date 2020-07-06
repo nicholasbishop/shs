@@ -27,6 +27,7 @@ pub struct Request<T> {
     state: Arc<RwLock<T>>,
 
     path_params: HashMap<String, String>,
+    req_headers: HashMap<HeaderName, String>,
     req_body: Vec<u8>,
 
     status: StatusCode,
@@ -35,6 +36,11 @@ pub struct Request<T> {
 }
 
 impl<T: Send + Sync> Request<T> {
+    /// Get the request headers.
+    pub fn headers(&self) -> &HashMap<HeaderName, String> {
+        &self.req_headers
+    }
+
     /// Deserialize the body as JSON.
     #[throws]
     pub fn read_json<'a, D: Deserialize<'a>>(&'a self) -> D {
@@ -228,6 +234,7 @@ fn handle_connection<T>(
                 state,
 
                 path_params,
+                req_headers: headers,
                 req_body,
 
                 resp_body: Vec::new(),
