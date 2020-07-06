@@ -1,3 +1,7 @@
+#![deny(missing_docs)]
+
+//! Easy-to-use non-async HTTP server.
+
 use anyhow::{anyhow, Context, Error};
 use bufstream::BufStream;
 use fehler::{throw, throws};
@@ -14,6 +18,9 @@ use std::thread;
 
 type HeaderName = unicase::UniCase<String>;
 
+/// Request type passed to handlers. It provides both the input
+/// request and the output response, as well as access to state shared
+/// across requests.
 pub struct Request<T> {
     state: Arc<RwLock<T>>,
 
@@ -26,11 +33,14 @@ pub struct Request<T> {
 }
 
 impl<T: Send + Sync> Request<T> {
+    /// Deserialize the body as JSON.
     #[throws]
     pub fn read_json<'a, D: Deserialize<'a>>(&'a self) -> D {
         serde_json::from_slice(&self.req_body)?
     }
 
+    /// Serialize the input as the response body. This also sets the
+    /// `Content-Type` to `application/json`.
     #[throws]
     pub fn write_json<S: Serialize>(&mut self, body: &S) {
         let json = serde_json::to_vec(body)?;
@@ -38,22 +48,30 @@ impl<T: Send + Sync> Request<T> {
         self.set_content_type("application/json");
     }
 
+    /// Set the response status code.
     pub fn set_status(&mut self, status: StatusCode) {
         self.status = status;
     }
 
+    /// Set the response status code to 404 (not found).
     pub fn set_not_found(&mut self) {
         self.set_status(StatusCode::NOT_FOUND);
     }
 
+    /// Set a response header.
     pub fn set_header(&mut self, name: &str, value: &str) {
         self.resp_headers.insert(name.into(), value.into());
     }
 
+    /// Set the `Content-Type` response header.
     pub fn set_content_type(&mut self, value: &str) {
         self.set_header("Content-Type", value);
     }
 
+    /// Get a path parameter. For example, if an input route
+    /// "/resource/:key" is defined, the handler can get the ":key"
+    /// portion by calling `path_param("key")`. The returned type can
+    /// be anything that implements `FromStr`.
     #[throws]
     pub fn path_param<F>(&self, name: &str) -> F
     where
@@ -69,6 +87,7 @@ impl<T: Send + Sync> Request<T> {
             .with_context(|| format!("failed to parse path param {}", name))?
     }
 
+    /// Access shared state via a closure.
     #[throws]
     pub fn with_state<R, F>(&self, f: F) -> R
     where
@@ -82,6 +101,7 @@ impl<T: Send + Sync> Request<T> {
         }
     }
 
+    /// Modify shared state via a closure.
     #[throws]
     pub fn with_state_mut<R, F>(&self, f: F) -> R
     where
@@ -96,6 +116,7 @@ impl<T: Send + Sync> Request<T> {
     }
 }
 
+/// Handler function for a route.
 pub type Handler<T> =
     dyn Fn(&mut Request<T>) -> Result<(), Error> + Send + Sync;
 
@@ -138,15 +159,18 @@ struct Route<T> {
     handler: Box<Handler<T>>,
 }
 
+/// Defines the methods and paths that map to handlers.
 pub struct Routes<T> {
     routes: Vec<Route<T>>,
 }
 
 impl<T> Routes<T> {
+    /// Create new `Routes`.
     pub fn new() -> Routes<T> {
         Routes { routes: Vec::new() }
     }
 
+    /// Add a new route.
     #[throws]
     pub fn add(&mut self, route: &str, handler: &'static Handler<T>) {
         let mut iter = route.split_whitespace();
@@ -264,6 +288,7 @@ fn handle_connection<T>(
     )?;
 }
 
+/// Start the server.
 pub fn serve<T: Send + Sync + 'static>(
     address: &str,
     routes: Routes<T>,
