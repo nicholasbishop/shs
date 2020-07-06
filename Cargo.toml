@@ -9,3 +9,6 @@ anyhow = "1.0"
 log = "0.4"
 fehler = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+simple-logging = "2.0"

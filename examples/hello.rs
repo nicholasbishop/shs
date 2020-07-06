@@ -26,6 +26,8 @@ fn get_value(req: &mut Request<State>) {
 
 #[throws]
 fn main() {
+    simple_logging::log_to_stderr(log::LevelFilter::Info);
+
     let mut routes = Routes::new();
     routes.add("GET /value/:value", &get_value)?;
     serve(
