@@ -45,7 +45,7 @@ impl<'a> Request<'a> {
     }
 }
 
-pub type Handler = dyn Fn(&mut Request) -> Result<(), Error>;
+pub type Handler = dyn Fn(&mut Request) -> Result<(), Error> + Send + Sync;
 
 #[derive(Clone)]
 struct Path {
@@ -131,18 +131,23 @@ fn handle_connection(stream: TcpStream, routes: Arc<Routes>) {
     }
 }
 
-pub fn serve<State>(address: &str, routes: Routes, _state: State) -> Result<(), Error> {
+pub fn serve<State>(
+    address: &str,
+    routes: Routes,
+    _state: State,
+) -> Result<(), Error> {
     let socket = address.parse::<SocketAddr>()?;
     let listener = TcpListener::bind(socket)?;
     let routes = Arc::new(routes);
     loop {
         let (tcp_stream, _addr) = listener.accept()?;
+        let routes = routes.clone();
 
         // Handle the request in a new thread
         if let Err(err) = thread::Builder::new()
             .name("shs-handler".into())
             .spawn(move || {
-                if let Err(err) = handle_connection(tcp_stream, routes.clone()) {
+                if let Err(err) = handle_connection(tcp_stream, routes) {
                     error!("{}", err);
                 }
             })
