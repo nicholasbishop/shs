@@ -6,7 +6,7 @@ use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -193,11 +193,20 @@ fn handle_connection<T>(
         let mut parts = line.split(':');
         if let Some(name) = parts.next() {
             let value = parts.next().unwrap_or("");
-            headers.insert(name.to_string(), value.to_string());
+            headers.insert(name.to_string(), value.trim().to_string());
         }
 
         if line.trim().is_empty() {
             break;
+        }
+    }
+
+    // TODO: handle case
+    let mut req_body = Vec::new();
+    if let Some(len) = headers.get("Content-Length") {
+        if let Ok(len) = len.parse::<usize>() {
+            req_body.resize(len, 0);
+            stream.read_exact(&mut req_body)?;
         }
     }
 
@@ -209,7 +218,7 @@ fn handle_connection<T>(
         if let Some(path_params) = match_path(&path, &route.path) {
             let mut req = Request {
                 // TODO
-                req_body: Vec::new(),
+                req_body,
 
                 resp_body: String::new(),
                 status: StatusCode::OK,
