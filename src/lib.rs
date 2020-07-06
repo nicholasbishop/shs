@@ -306,6 +306,14 @@ impl<T: Send + Sync + 'static> Server<T> {
         });
     }
 
+    /// Get the shared application state.
+    ///
+    /// This is useful if you are spawning additional worker threads
+    /// that will also use this state.
+    pub fn state(&self) -> Arc<RwLock<T>> {
+        self.state.clone()
+    }
+
     /// Start the server.
     pub fn launch(self) -> Result<(), Error> {
         let listener = TcpListener::bind(self.address)?;
