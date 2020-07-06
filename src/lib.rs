@@ -16,8 +16,7 @@ pub struct Request<T> {
     req_body: Vec<u8>,
 
     status: StatusCode,
-    // TODO make this a Vec<u8>
-    resp_body: String,
+    resp_body: Vec<u8>,
     resp_headers: HashMap<String, String>,
 
     path_params: HashMap<String, String>,
@@ -32,8 +31,8 @@ impl<T: Send + Sync> Request<T> {
 
     #[throws]
     pub fn write_json<S: Serialize>(&mut self, body: &S) {
-        let json = serde_json::to_string(body)?;
-        self.resp_body.push_str(&json);
+        let json = serde_json::to_vec(body)?;
+        self.resp_body.extend(&json);
         self.set_content_type("application/json");
     }
 
@@ -220,7 +219,7 @@ fn handle_connection<T>(
                 // TODO
                 req_body,
 
-                resp_body: String::new(),
+                resp_body: Vec::new(),
                 status: StatusCode::OK,
                 resp_headers: HashMap::new(),
                 path_params,
@@ -246,7 +245,7 @@ fn handle_connection<T>(
                 format!("Content-Length: {}\n", req.resp_body.len()).as_bytes(),
             )?;
             stream.write(b"\n")?;
-            stream.write(req.resp_body.as_bytes())?;
+            stream.write(&req.resp_body)?;
             return;
         }
     }
