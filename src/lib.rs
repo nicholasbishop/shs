@@ -2,7 +2,6 @@ use anyhow::{anyhow, Context, Error};
 use fehler::{throw, throws};
 use log::error;
 use serde::Serialize;
-use std::any::Any;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io::{self, BufRead};
@@ -11,12 +10,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 
-pub struct Request<'a> {
-    state: &'a dyn Any,
+pub struct Request {
     path_params: HashMap<String, String>,
 }
 
-impl<'a> Request<'a> {
+impl Request {
     #[throws]
     pub fn send_json<T: Serialize>(&mut self, _t: T) {
         // TODO: write body
@@ -36,13 +34,6 @@ impl<'a> Request<'a> {
             .parse()
             .with_context(|| format!("failed to parse path param {}", name))?
     }
-
-    #[throws]
-    pub fn state<T: Any>(&self) -> &'a T {
-        self.state
-            .downcast_ref()
-            .ok_or_else(|| anyhow!("failed to cast state"))?
-    }
 }
 
 pub type Handler = dyn Fn(&mut Request) -> Result<(), Error> + Send + Sync;
@@ -50,6 +41,16 @@ pub type Handler = dyn Fn(&mut Request) -> Result<(), Error> + Send + Sync;
 #[derive(Clone)]
 struct Path {
     parts: Vec<String>,
+}
+
+fn does_path_match(path: &Path, route_path: &Path) -> bool {
+    for (left, right) in path.parts.iter().zip(route_path.parts.iter()) {
+        let is_placeholder = right.starts_with(':');
+        if !is_placeholder && left != right {
+            return false;
+        }
+    }
+    true
 }
 
 impl FromStr for Path {
@@ -109,8 +110,7 @@ fn handle_connection(stream: TcpStream, routes: Arc<Routes>) {
         throw!(anyhow!("invalid request: {}", line));
     }
     let method = parts[0];
-    let path = parts[1];
-    let protocol = parts[2];
+    let path = parts[1].parse::<Path>()?;
 
     // Parse headers
     // TODO: do duplicate headers accumulate? should be Vec value if so
@@ -128,14 +128,30 @@ fn handle_connection(stream: TcpStream, routes: Arc<Routes>) {
             let value = parts.next().unwrap_or("");
             headers.insert(name.to_string(), value.to_string());
         }
+
+        if line.trim().is_empty() {
+            break;
+        }
+    }
+
+    for route in &routes.routes {
+        if route.method == method && does_path_match(&path, &route.path) {
+            let mut req = Request {
+                // TODO
+                path_params: HashMap::new(),
+            };
+            if let Err(err) = (route.handler)(&mut req) {
+                error!("{}", err);
+            // TODO: handle error
+            } else {
+                // TODO: handle success
+            }
+            break;
+        }
     }
 }
 
-pub fn serve<State>(
-    address: &str,
-    routes: Routes,
-    _state: State,
-) -> Result<(), Error> {
+pub fn serve(address: &str, routes: Routes) -> Result<(), Error> {
     let socket = address.parse::<SocketAddr>()?;
     let listener = TcpListener::bind(socket)?;
     let routes = Arc::new(routes);

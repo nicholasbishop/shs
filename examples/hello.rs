@@ -10,7 +10,7 @@ struct State {
 
 #[derive(Serialize)]
 struct MyResp {
-    name: String,
+    // name: String,
     value: String,
 }
 
@@ -18,7 +18,7 @@ struct MyResp {
 fn get_value(req: &mut Request) {
     let value = req.path_param("value")?;
     req.send_json(MyResp {
-        name: req.state::<State>()?.name.clone(),
+        // name: req.state::<State>()?.name.clone(),
         value,
     })?;
 }
@@ -27,11 +27,5 @@ fn get_value(req: &mut Request) {
 fn main() {
     let mut routes = Routes::new();
     routes.add("GET /value/:value", &get_value)?;
-    serve(
-        "127.0.0.1:1234",
-        routes,
-        State {
-            name: "hello-example".into(),
-        },
-    )?;
+    serve("127.0.0.1:1234", routes)?;
 }
