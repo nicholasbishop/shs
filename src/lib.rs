@@ -1,16 +1,18 @@
 use anyhow::{anyhow, Context, Error};
+use bufstream::BufStream;
 use fehler::{throw, throws};
 use log::error;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::io::{self, BufRead};
+use std::io::BufRead;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 
 pub struct Request<T> {
+    //writer: &'a BufStream,
     path_params: HashMap<String, String>,
     state: Arc<T>,
 }
@@ -49,14 +51,21 @@ struct Path {
     parts: Vec<String>,
 }
 
-fn does_path_match(path: &Path, route_path: &Path) -> bool {
+fn match_path(
+    path: &Path,
+    route_path: &Path,
+) -> Option<HashMap<String, String>> {
+    let mut map = HashMap::new();
     for (left, right) in path.parts.iter().zip(route_path.parts.iter()) {
         let is_placeholder = right.starts_with(':');
         if !is_placeholder && left != right {
-            return false;
+            return None;
+        }
+        if is_placeholder {
+            map.insert(right[1..].to_string(), left.to_string());
         }
     }
-    true
+    Some(map)
 }
 
 impl FromStr for Path {
@@ -110,8 +119,8 @@ fn handle_connection<T>(
     routes: Arc<Routes<T>>,
     state: Arc<T>,
 ) {
-    let reader = io::BufReader::new(stream);
-    let mut lines = reader.lines();
+    let stream = BufStream::new(stream);
+    let mut lines = stream.lines();
     let line = lines
         .next()
         .ok_or_else(|| anyhow!("missing request header"))??;
@@ -145,12 +154,12 @@ fn handle_connection<T>(
     }
 
     for route in &routes.routes {
-        if route.method == method && does_path_match(&path, &route.path) {
-            let mut req = Request {
-                state,
-                // TODO
-                path_params: HashMap::new(),
-            };
+        if method != route.method {
+            continue;
+        }
+
+        if let Some(path_params) = match_path(&path, &route.path) {
+            let mut req = Request { path_params, state };
             if let Err(err) = (route.handler)(&mut req) {
                 error!("{}", err);
             // TODO: handle error

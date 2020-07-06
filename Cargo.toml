@@ -6,6 +6,7 @@ edition = "2018"
 
 [dependencies]
 anyhow = "1.0"
+bufstream = "0.1"
 log = "0.4"
 fehler = "1.0"
 serde = { version = "1.0", features = ["derive"] }
