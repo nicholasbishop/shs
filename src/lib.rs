@@ -2,12 +2,14 @@
 
 //! Easy-to-use non-async HTTP server.
 
+mod status_code;
+
 use anyhow::{anyhow, Context, Error};
 use bufstream::BufStream;
 use fehler::{throw, throws};
-pub use http::StatusCode;
 use log::error;
 use serde::{Deserialize, Serialize};
+pub use status_code::StatusCode;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::io::{BufRead, Read, Write};
@@ -55,7 +57,7 @@ impl<T: Send + Sync> Request<T> {
 
     /// Set the response status code to 404 (not found).
     pub fn set_not_found(&mut self) {
-        self.set_status(StatusCode::NOT_FOUND);
+        self.set_status(StatusCode::NotFound);
     }
 
     /// Set a response header.
@@ -247,19 +249,19 @@ fn handle_connection<T>(
                 req_body,
 
                 resp_body: Vec::new(),
-                status: StatusCode::OK,
+                status: StatusCode::Ok,
                 resp_headers: HashMap::new(),
             };
             if let Err(err) = (route.handler)(&mut req) {
                 error!("{}", err);
                 req.resp_body = "internal server error".into();
-                req.status = StatusCode::INTERNAL_SERVER_ERROR;
+                req.status = StatusCode::InternalServerError;
             }
             stream.write_all(
                 format!(
                     "HTTP/1.1 {} {}\n",
-                    req.status.as_u16(),
-                    req.status.canonical_reason().unwrap_or("")
+                    req.status,
+                    req.status.canonical_reason(),
                 )
                 .as_bytes(),
             )?;
@@ -277,14 +279,10 @@ fn handle_connection<T>(
     }
 
     // No matching route found
-    let status = StatusCode::NOT_FOUND;
+    let status = StatusCode::NotFound;
     stream.write_all(
-        format!(
-            "HTTP/1.1 {} {}\n\n",
-            status.as_u16(),
-            status.canonical_reason().unwrap_or("")
-        )
-        .as_bytes(),
+        format!("HTTP/1.1 {} {}\n\n", status, status.canonical_reason())
+            .as_bytes(),
     )?;
 }
 
