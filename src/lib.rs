@@ -1,6 +1,6 @@
 #![deny(missing_docs)]
 
-//! Easy-to-use non-async HTTP server.
+//! Easy-to-use non-async HTTP 1.1 server.
 
 mod status_code;
 
@@ -256,6 +256,23 @@ fn handle_connection<T>(
 }
 
 /// HTTP 1.1 server.
+///
+/// Example usage:
+/// ```no_run
+/// use anyhow::Error;
+/// use fehler::throws;
+/// use shs::{Request, Server};
+///
+/// #[throws]
+/// fn handler(req: &mut Request<()>) {
+///     todo!();
+/// }
+///
+/// let mut server = Server::new("127.0.0.1:1234", ())?;
+/// server.route("GET /hello", &handler)?;
+/// server.launch()?;
+/// # Ok::<(), Error>(())
+/// ```
 pub struct Server<T> {
     address: SocketAddr,
     routes: Vec<Route<T>>,
