@@ -240,7 +240,8 @@ fn handle_connection<T>(
                 .as_bytes(),
             )?;
             for (name, value) in req.resp_headers {
-                stream.write_all(format!("{}: {}\n", name, value).as_bytes())?;
+                stream
+                    .write_all(format!("{}: {}\n", name, value).as_bytes())?;
             }
             stream.write_all(
                 format!("Content-Length: {}\n", req.resp_body.len()).as_bytes(),
