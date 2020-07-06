@@ -5,22 +5,24 @@ use log::error;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::io::BufRead;
+use std::io::{BufRead, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 
 pub struct Request<T> {
-    //writer: &'a BufStream,
+    body: String,
+
     path_params: HashMap<String, String>,
     state: Arc<T>,
 }
 
-impl<T> Request<T> {
+impl<'a, T> Request<T> {
     #[throws]
-    pub fn send_json<S: Serialize>(&mut self, _t: S) {
-        // TODO: write body
+    pub fn write_json<S: Serialize>(&mut self, body: &S) {
+        let json = serde_json::to_string(body)?;
+        self.body.push_str(&json);
     }
 
     #[throws]
@@ -119,11 +121,11 @@ fn handle_connection<T>(
     routes: Arc<Routes<T>>,
     state: Arc<T>,
 ) {
-    let stream = BufStream::new(stream);
-    let mut lines = stream.lines();
-    let line = lines
-        .next()
-        .ok_or_else(|| anyhow!("missing request header"))??;
+    let mut stream = BufStream::new(stream);
+    let mut line = String::new();
+    stream
+        .read_line(&mut line)
+        .context("missing request header")?;
     let parts = line.split_whitespace().take(3).collect::<Vec<_>>();
     if parts.len() != 3 {
         throw!(anyhow!("invalid request: {}", line));
@@ -134,14 +136,10 @@ fn handle_connection<T>(
     // Parse headers
     // TODO: do duplicate headers accumulate? should be Vec value if so
     let mut headers: HashMap<String, String> = HashMap::new();
-    for line in lines {
-        let line = match line {
-            Ok(line) => line,
-            Err(err) => {
-                error!("failed to read header: {}", err);
-                continue;
-            }
-        };
+    loop {
+        let mut line = String::new();
+        stream.read_line(&mut line).context("failed to read line")?;
+
         let mut parts = line.split(':');
         if let Some(name) = parts.next() {
             let value = parts.next().unwrap_or("");
@@ -159,7 +157,11 @@ fn handle_connection<T>(
         }
 
         if let Some(path_params) = match_path(&path, &route.path) {
-            let mut req = Request { path_params, state };
+            let mut req = Request {
+                body: String::new(),
+                path_params,
+                state,
+            };
             if let Err(err) = (route.handler)(&mut req) {
                 error!("{}", err);
             // TODO: handle error

@@ -18,7 +18,7 @@ struct MyResp {
 #[throws]
 fn get_value(req: &mut Request<State>) {
     let value = req.path_param("value")?;
-    req.send_json(MyResp {
+    req.write_json(&MyResp {
         name: req.state().name.clone(),
         value,
     })?;
