@@ -12,6 +12,8 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::thread;
 
+type HeaderName = unicase::UniCase<String>;
+
 pub struct Request<T> {
     state: Arc<RwLock<T>>,
 
@@ -184,7 +186,7 @@ fn handle_connection<T>(
 
     // Parse headers
     // TODO: do duplicate headers accumulate? should be Vec value if so
-    let mut headers: HashMap<String, String> = HashMap::new();
+    let mut headers: HashMap<HeaderName, String> = HashMap::new();
     loop {
         let mut line = String::new();
         stream.read_line(&mut line).context("failed to read line")?;
@@ -192,7 +194,7 @@ fn handle_connection<T>(
         let mut parts = line.split(':');
         if let Some(name) = parts.next() {
             let value = parts.next().unwrap_or("");
-            headers.insert(name.to_string(), value.trim().to_string());
+            headers.insert(name.into(), value.trim().to_string());
         }
 
         if line.trim().is_empty() {
@@ -200,9 +202,8 @@ fn handle_connection<T>(
         }
     }
 
-    // TODO: handle case
     let mut req_body = Vec::new();
-    if let Some(len) = headers.get("Content-Length") {
+    if let Some(len) = headers.get(&HeaderName::new("Content-Length".into())) {
         if let Ok(len) = len.parse::<usize>() {
             req_body.resize(len, 0);
             stream.read_exact(&mut req_body)?;
