@@ -231,7 +231,7 @@ fn handle_connection<T>(
                 req.resp_body = "internal server error".into();
                 req.status = StatusCode::INTERNAL_SERVER_ERROR;
             }
-            stream.write(
+            stream.write_all(
                 format!(
                     "HTTP/1.1 {} {}\n",
                     req.status.as_u16(),
@@ -240,20 +240,20 @@ fn handle_connection<T>(
                 .as_bytes(),
             )?;
             for (name, value) in req.resp_headers {
-                stream.write(format!("{}: {}\n", name, value).as_bytes())?;
+                stream.write_all(format!("{}: {}\n", name, value).as_bytes())?;
             }
-            stream.write(
+            stream.write_all(
                 format!("Content-Length: {}\n", req.resp_body.len()).as_bytes(),
             )?;
-            stream.write(b"\n")?;
-            stream.write(&req.resp_body)?;
+            stream.write_all(b"\n")?;
+            stream.write_all(&req.resp_body)?;
             return;
         }
     }
 
     // No matching route found
     let status = StatusCode::NOT_FOUND;
-    stream.write(
+    stream.write_all(
         format!(
             "HTTP/1.1 {} {}\n\n",
             status.as_u16(),
