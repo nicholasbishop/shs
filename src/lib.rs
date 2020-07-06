@@ -45,8 +45,7 @@ impl<T: Send + Sync> Request<T> {
     /// `Content-Type` to `application/json`.
     #[throws]
     pub fn write_json<S: Serialize>(&mut self, body: &S) {
-        let json = serde_json::to_vec(body)?;
-        self.resp_body.extend(&json);
+        self.resp_body = serde_json::to_vec(body)?;
         self.set_content_type("application/json");
     }
 
