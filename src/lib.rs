@@ -10,13 +10,14 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 
-pub struct Request {
+pub struct Request<T> {
     path_params: HashMap<String, String>,
+    state: Arc<T>,
 }
 
-impl Request {
+impl<T> Request<T> {
     #[throws]
-    pub fn send_json<T: Serialize>(&mut self, _t: T) {
+    pub fn send_json<S: Serialize>(&mut self, _t: S) {
         // TODO: write body
     }
 
@@ -34,9 +35,14 @@ impl Request {
             .parse()
             .with_context(|| format!("failed to parse path param {}", name))?
     }
+
+    pub fn state(&self) -> &T {
+        &self.state
+    }
 }
 
-pub type Handler = dyn Fn(&mut Request) -> Result<(), Error> + Send + Sync;
+pub type Handler<T> =
+    dyn Fn(&mut Request<T>) -> Result<(), Error> + Send + Sync;
 
 #[derive(Clone)]
 struct Path {
@@ -64,23 +70,23 @@ impl FromStr for Path {
     }
 }
 
-struct Route {
+struct Route<T> {
     method: String,
     path: Path,
-    handler: Box<Handler>,
+    handler: Box<Handler<T>>,
 }
 
-pub struct Routes {
-    routes: Vec<Route>,
+pub struct Routes<T> {
+    routes: Vec<Route<T>>,
 }
 
-impl Routes {
-    pub fn new() -> Routes {
+impl<T> Routes<T> {
+    pub fn new() -> Routes<T> {
         Routes { routes: Vec::new() }
     }
 
     #[throws]
-    pub fn add(&mut self, route: &str, handler: &'static Handler) {
+    pub fn add(&mut self, route: &str, handler: &'static Handler<T>) {
         let mut iter = route.split_whitespace();
         let method = iter.next().ok_or_else(|| anyhow!("missing method"))?;
         let path = iter.next().ok_or_else(|| anyhow!("missing path"))?;
@@ -92,14 +98,18 @@ impl Routes {
     }
 }
 
-impl Default for Routes {
-    fn default() -> Routes {
+impl<T> Default for Routes<T> {
+    fn default() -> Routes<T> {
         Routes { routes: Vec::new() }
     }
 }
 
 #[throws]
-fn handle_connection(stream: TcpStream, routes: Arc<Routes>) {
+fn handle_connection<T>(
+    stream: TcpStream,
+    routes: Arc<Routes<T>>,
+    state: Arc<T>,
+) {
     let reader = io::BufReader::new(stream);
     let mut lines = reader.lines();
     let line = lines
@@ -137,6 +147,7 @@ fn handle_connection(stream: TcpStream, routes: Arc<Routes>) {
     for route in &routes.routes {
         if route.method == method && does_path_match(&path, &route.path) {
             let mut req = Request {
+                state,
                 // TODO
                 path_params: HashMap::new(),
             };
@@ -151,19 +162,24 @@ fn handle_connection(stream: TcpStream, routes: Arc<Routes>) {
     }
 }
 
-pub fn serve(address: &str, routes: Routes) -> Result<(), Error> {
+pub fn serve<T: Send + Sync + 'static>(
+    address: &str,
+    routes: Routes<T>,
+    state: Arc<T>,
+) -> Result<(), Error> {
     let socket = address.parse::<SocketAddr>()?;
     let listener = TcpListener::bind(socket)?;
     let routes = Arc::new(routes);
     loop {
         let (tcp_stream, _addr) = listener.accept()?;
         let routes = routes.clone();
+        let state = state.clone();
 
         // Handle the request in a new thread
         if let Err(err) = thread::Builder::new()
             .name("shs-handler".into())
             .spawn(move || {
-                if let Err(err) = handle_connection(tcp_stream, routes) {
+                if let Err(err) = handle_connection(tcp_stream, routes, state) {
                     error!("{}", err);
                 }
             })
