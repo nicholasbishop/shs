@@ -371,6 +371,9 @@ pub struct TestResponse {
 
     /// Response body.
     pub body: Vec<u8>,
+
+    /// Response headers.
+    pub headers: HashMap<HeaderName, String>,
 }
 
 impl TestResponse {
@@ -379,6 +382,14 @@ impl TestResponse {
     pub fn json<'a, D: Deserialize<'a>>(&'a self) -> D {
         serde_json::from_slice(&self.body)?
     }
+}
+
+fn convert_header_map_to_unicase(
+    map: &HashMap<String, String>,
+) -> HashMap<HeaderName, String> {
+    map.iter()
+        .map(|(key, val)| (HeaderName::new(key.clone()), val.clone()))
+        .collect()
 }
 
 /// HTTP 1.1 server.
@@ -474,11 +485,7 @@ impl<T: Send + Sync + 'static> Server<T> {
 
             method: input.method.clone(),
             path_params: HashMap::new(),
-            req_headers: input
-                .headers
-                .iter()
-                .map(|(key, val)| (HeaderName::new(key.clone()), val.clone()))
-                .collect(),
+            req_headers: convert_header_map_to_unicase(&input.headers),
             req_body: input.body.clone(),
             url: input.url.clone(),
 
@@ -492,6 +499,7 @@ impl<T: Send + Sync + 'static> Server<T> {
         TestResponse {
             status: req.status,
             body: req.resp_body,
+            headers: convert_header_map_to_unicase(&req.resp_headers),
         }
     }
 }
