@@ -28,7 +28,7 @@ fn get_dict(req: &mut Request<State>) {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct PostDictReq {
     key: String,
     value: String,
@@ -43,11 +43,48 @@ fn post_dict(req: &mut Request<State>) {
 }
 
 #[throws]
-fn main() {
-    simple_logging::log_to_stderr(log::LevelFilter::Info);
-
+fn create_server() -> Server<State> {
     let mut server = Server::new("127.0.0.1:1234", State::default())?;
     server.route("GET /dict/:key", &get_dict)?;
     server.route("POST /dict", &post_dict)?;
+    server
+}
+
+#[throws]
+fn main() {
+    simple_logging::log_to_stderr(log::LevelFilter::Info);
+
+    let server = create_server()?;
     server.launch()?;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shs::{StatusCode, TestRequest};
+
+    #[throws]
+    #[test]
+    fn test_server() {
+        let server = create_server()?;
+
+        // Not found
+        let resp = server.test_request(&TestRequest::new("GET /dict/a")?)?;
+        assert_eq!(resp.status, StatusCode::NotFound);
+
+        // Add an item
+        let resp = server.test_request(&TestRequest::new_with_json(
+            "POST /dict",
+            &PostDictReq {
+                key: "a".into(),
+                value: "b".into(),
+            },
+        )?)?;
+        assert_eq!(resp.status, StatusCode::Ok);
+
+        // Found
+        let resp = server.test_request(&TestRequest::new("GET /dict/a")?)?;
+        assert_eq!(resp.status, StatusCode::Ok);
+        // TODO check body
+    }
 }

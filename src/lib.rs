@@ -27,6 +27,7 @@ type HeaderName = unicase::UniCase<String>;
 pub struct Request<T> {
     state: Arc<RwLock<T>>,
 
+    method: String,
     path_params: HashMap<String, String>,
     req_headers: HashMap<HeaderName, String>,
     req_body: Vec<u8>,
@@ -188,9 +189,30 @@ struct Route<T> {
 }
 
 #[throws]
+fn dispatch_request<T>(
+    routes: Arc<RwLock<Vec<Route<T>>>>,
+    path: &Path,
+    req: &mut Request<T>,
+) -> bool {
+    for route in &*routes.read().unwrap() {
+        if req.method != route.method {
+            continue;
+        }
+
+        if let Some(path_params) = match_path(path, &route.path) {
+            req.path_params = path_params;
+            (route.handler)(req)?;
+            return true;
+        }
+    }
+    req.status = StatusCode::NotFound;
+    false
+}
+
+#[throws]
 fn handle_connection<T>(
     stream: TcpStream,
-    routes: Arc<Vec<Route<T>>>,
+    routes: Arc<RwLock<Vec<Route<T>>>>,
     state: Arc<RwLock<T>>,
 ) {
     let mut stream = BufStream::new(stream);
@@ -203,7 +225,8 @@ fn handle_connection<T>(
         throw!(anyhow!("invalid request: {}", line));
     }
     let method = parts[0];
-    let path = parts[1].parse::<Path>()?;
+    let raw_path = parts[1];
+    let path = raw_path.parse::<Path>()?;
 
     // Parse headers
     // TODO: do duplicate headers accumulate? should be Vec value if so
@@ -236,58 +259,115 @@ fn handle_connection<T>(
         .ok_or_else(|| anyhow!("missing host header"))?;
     let mut url = Url::parse(&format!("http://{}", host))
         .with_context(|| format!("failed to parse host {}", host))?;
-    url.set_path(parts[1]);
+    url.set_path(raw_path);
 
-    for route in &*routes {
-        if method != route.method {
-            continue;
+    let mut req = Request {
+        state,
+
+        method: method.into(),
+        path_params: HashMap::new(),
+        req_headers: headers,
+        req_body,
+        url,
+
+        resp_body: Vec::new(),
+        status: StatusCode::Ok,
+        resp_headers: HashMap::new(),
+    };
+
+    match dispatch_request(routes, &path, &mut req) {
+        Err(err) => {
+            error!("{}", err);
+            req.resp_body = "internal server error".into();
+            req.status = StatusCode::InternalServerError;
         }
+        Ok(false) => {
+            error!("not found: {}", raw_path);
+        }
+        Ok(true) => {}
+    }
 
-        if let Some(path_params) = match_path(&path, &route.path) {
-            let mut req = Request {
-                state,
+    stream.write_all(
+        format!(
+            "HTTP/1.1 {} {}\n",
+            req.status,
+            req.status.canonical_reason(),
+        )
+        .as_bytes(),
+    )?;
+    for (name, value) in req.resp_headers {
+        stream.write_all(format!("{}: {}\n", name, value).as_bytes())?;
+    }
+    stream.write_all(
+        format!("Content-Length: {}\n", req.resp_body.len()).as_bytes(),
+    )?;
+    stream.write_all(b"\n")?;
+    stream.write_all(&req.resp_body)?;
+}
 
-                path_params,
-                req_headers: headers,
-                req_body,
-                url,
+/// Test request for calling Server::test_request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TestRequest {
+    body: Vec<u8>,
+    method: String,
+    url: Url,
+    headers: HashMap<String, String>,
+}
 
-                resp_body: Vec::new(),
-                status: StatusCode::Ok,
-                resp_headers: HashMap::new(),
-            };
-            if let Err(err) = (route.handler)(&mut req) {
-                error!("{}", err);
-                req.resp_body = "internal server error".into();
-                req.status = StatusCode::InternalServerError;
-            }
-            stream.write_all(
-                format!(
-                    "HTTP/1.1 {} {}\n",
-                    req.status,
-                    req.status.canonical_reason(),
-                )
-                .as_bytes(),
-            )?;
-            for (name, value) in req.resp_headers {
-                stream
-                    .write_all(format!("{}: {}\n", name, value).as_bytes())?;
-            }
-            stream.write_all(
-                format!("Content-Length: {}\n", req.resp_body.len()).as_bytes(),
-            )?;
-            stream.write_all(b"\n")?;
-            stream.write_all(&req.resp_body)?;
-            return;
+impl TestRequest {
+    /// Create a new test request with the method, URL, and body set.
+    ///
+    /// The input string should be in the format "METHOD /path". The
+    /// path will automatically be expanded to a full URL:
+    /// "http://example.com/path".
+    #[throws]
+    pub fn new_with_body(s: &str, body: &[u8]) -> TestRequest {
+        let parts = s.split_whitespace().collect::<Vec<_>>();
+        TestRequest {
+            body: body.into(),
+            method: parts[0].into(),
+            url: Url::parse(&format!("http://example.com{}", parts[1]))?,
+            headers: HashMap::new(),
         }
     }
 
-    // No matching route found
-    let status = StatusCode::NotFound;
-    stream.write_all(
-        format!("HTTP/1.1 {} {}\n\n", status, status.canonical_reason())
-            .as_bytes(),
-    )?;
+    /// Create a new test request with the method, URL, and body set.
+    ///
+    /// The input string should be in the format "METHOD /path". The
+    /// path will automatically be expanded to a full URL:
+    /// "http://example.com/path".
+    #[throws]
+    pub fn new_with_json<S: Serialize>(s: &str, body: &S) -> TestRequest {
+        let parts = s.split_whitespace().collect::<Vec<_>>();
+        TestRequest {
+            body: serde_json::to_vec(body)?,
+            method: parts[0].into(),
+            url: Url::parse(&format!("http://example.com{}", parts[1]))?,
+            headers: HashMap::new(),
+        }
+    }
+
+    /// Create a new test request with the method and URL set.
+    ///
+    /// The input string should be in the format "METHOD /path". The
+    /// path will automatically be expanded to a full URL:
+    /// "http://example.com/path".
+    #[throws]
+    pub fn new(s: &str) -> TestRequest {
+        Self::new_with_body(s, &Vec::new())?
+    }
+
+    #[throws]
+    fn path(&self) -> Path {
+        self.url.path().parse()?
+    }
+}
+
+/// Response from calling Server::test_request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TestResponse {
+    /// Response code.
+    pub status: StatusCode,
 }
 
 /// HTTP 1.1 server.
@@ -310,7 +390,7 @@ fn handle_connection<T>(
 /// ```
 pub struct Server<T> {
     address: SocketAddr,
-    routes: Vec<Route<T>>,
+    routes: Arc<RwLock<Vec<Route<T>>>>,
     state: Arc<RwLock<T>>,
 }
 
@@ -320,7 +400,7 @@ impl<T: Send + Sync + 'static> Server<T> {
     pub fn new(address: &str, state: T) -> Server<T> {
         Server {
             address: address.parse::<SocketAddr>()?,
-            routes: Vec::new(),
+            routes: Arc::new(RwLock::new(Vec::new())),
             state: Arc::new(RwLock::new(state)),
         }
     }
@@ -334,7 +414,8 @@ impl<T: Send + Sync + 'static> Server<T> {
         let mut iter = route.split_whitespace();
         let method = iter.next().ok_or_else(|| anyhow!("missing method"))?;
         let path = iter.next().ok_or_else(|| anyhow!("missing path"))?;
-        self.routes.push(Route {
+        let mut routes = self.routes.write().unwrap();
+        routes.push(Route {
             method: method.into(),
             path: path.parse()?,
             handler: Box::new(handler),
@@ -352,7 +433,7 @@ impl<T: Send + Sync + 'static> Server<T> {
     /// Start the server.
     pub fn launch(self) -> Result<(), Error> {
         let listener = TcpListener::bind(self.address)?;
-        let routes = Arc::new(self.routes);
+        let routes = self.routes.clone();
         loop {
             let (tcp_stream, _addr) = listener.accept()?;
             let routes = routes.clone();
@@ -372,6 +453,33 @@ impl<T: Send + Sync + 'static> Server<T> {
                 error!("failed to spawn thread: {}", err);
             }
         }
+    }
+
+    /// Send a fake request for testing.
+    #[throws]
+    pub fn test_request(&self, input: &TestRequest) -> TestResponse {
+        let mut req = Request {
+            state: self.state.clone(),
+
+            method: input.method.clone(),
+            path_params: HashMap::new(),
+            req_headers: input
+                .headers
+                .iter()
+                .map(|(key, val)| (HeaderName::new(key.clone()), val.clone()))
+                .collect(),
+            req_body: input.body.clone(),
+            url: input.url.clone(),
+
+            resp_body: Vec::new(),
+            status: StatusCode::Ok,
+            resp_headers: HashMap::new(),
+        };
+        let path = input.path()?;
+        dispatch_request(self.routes.clone(), &path, &mut req)?;
+
+        // TODO
+        TestResponse { status: req.status }
     }
 }
 
