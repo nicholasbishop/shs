@@ -9,34 +9,34 @@ struct State {
     dict: HashMap<String, String>,
 }
 
-#[derive(Serialize)]
-struct GetDictResp {
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct DictItem {
     key: String,
     value: String,
+}
+
+impl DictItem {
+    fn new(key: &str, value: &str) -> DictItem {
+        DictItem {
+            key: key.into(),
+            value: value.into(),
+        }
+    }
 }
 
 #[throws]
 fn get_dict(req: &mut Request<State>) {
     let key: String = req.path_param("key")?;
     if let Some(value) = req.with_state(|s| s.dict.get(&key).cloned())? {
-        req.write_json(&GetDictResp {
-            key: key.clone(),
-            value: value.to_string(),
-        })?;
+        req.write_json(&DictItem::new(&key, &value))?;
     } else {
         req.set_not_found();
     }
 }
 
-#[derive(Deserialize, Serialize)]
-struct PostDictReq {
-    key: String,
-    value: String,
-}
-
 #[throws]
 fn post_dict(req: &mut Request<State>) {
-    let body: PostDictReq = req.read_json()?;
+    let body: DictItem = req.read_json()?;
     req.with_state_mut(|s| {
         s.dict.insert(body.key.clone(), body.value.clone())
     })?;
@@ -75,16 +75,13 @@ mod tests {
         // Add an item
         let resp = server.test_request(&TestRequest::new_with_json(
             "POST /dict",
-            &PostDictReq {
-                key: "a".into(),
-                value: "b".into(),
-            },
+            &DictItem::new("a", "b"),
         )?)?;
         assert_eq!(resp.status, StatusCode::Ok);
 
         // Found
         let resp = server.test_request(&TestRequest::new("GET /dict/a")?)?;
         assert_eq!(resp.status, StatusCode::Ok);
-        // TODO check body
+        assert_eq!(resp.json::<DictItem>()?, DictItem::new("a", "b"));
     }
 }

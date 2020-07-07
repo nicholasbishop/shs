@@ -368,6 +368,17 @@ impl TestRequest {
 pub struct TestResponse {
     /// Response code.
     pub status: StatusCode,
+
+    /// Response body.
+    pub body: Vec<u8>,
+}
+
+impl TestResponse {
+    /// Parse the test response body as JSON.
+    #[throws]
+    pub fn json<'a, D: Deserialize<'a>>(&'a self) -> D {
+        serde_json::from_slice(&self.body)?
+    }
 }
 
 /// HTTP 1.1 server.
@@ -478,8 +489,10 @@ impl<T: Send + Sync + 'static> Server<T> {
         let path = input.path()?;
         dispatch_request(self.routes.clone(), &path, &mut req)?;
 
-        // TODO
-        TestResponse { status: req.status }
+        TestResponse {
+            status: req.status,
+            body: req.resp_body,
+        }
     }
 }
 
