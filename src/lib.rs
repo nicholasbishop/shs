@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 pub use status_code::StatusCode;
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::fmt::Display;
 use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
@@ -116,7 +117,7 @@ impl Request {
 }
 
 /// Handler function for a route.
-pub type Handler = dyn Fn(&mut Request) -> Result<(), Error> + Send + Sync;
+pub type Handler<E> = dyn Fn(&mut Request) -> Result<(), E> + Send + Sync;
 
 #[derive(Clone)]
 struct Path {
@@ -151,18 +152,17 @@ impl FromStr for Path {
     }
 }
 
-struct Route {
+struct Route<E> {
     method: String,
     path: Path,
-    handler: Box<Handler>,
+    handler: Box<Handler<E>>,
 }
 
-#[throws]
-fn dispatch_request(
-    routes: Arc<RwLock<Vec<Route>>>,
+fn dispatch_request<E>(
+    routes: Arc<RwLock<Vec<Route<E>>>>,
     path: &Path,
     req: &mut Request,
-) -> bool {
+) -> Result<bool, E> {
     for route in &*routes.read().unwrap() {
         if req.method != route.method {
             continue;
@@ -171,15 +171,18 @@ fn dispatch_request(
         if let Some(path_params) = match_path(path, &route.path) {
             req.path_params = path_params;
             (route.handler)(req)?;
-            return true;
+            return Ok(true);
         }
     }
     req.status = StatusCode::NotFound;
-    false
+    Ok(false)
 }
 
 #[throws]
-fn handle_connection(stream: TcpStream, routes: Arc<RwLock<Vec<Route>>>) {
+fn handle_connection<E: Display>(
+    stream: TcpStream,
+    routes: Arc<RwLock<Vec<Route<E>>>>,
+) {
     let mut stream = BufStream::new(stream);
     let mut line = String::new();
     stream
@@ -373,15 +376,15 @@ fn convert_header_map_to_unicase(
 /// server.launch()?;
 /// # Ok::<(), Error>(())
 /// ```
-pub struct Server {
+pub struct Server<E> {
     address: SocketAddr,
-    routes: Arc<RwLock<Vec<Route>>>,
+    routes: Arc<RwLock<Vec<Route<E>>>>,
 }
 
-impl Server {
+impl<E: Display + 'static> Server<E> {
     /// Create a new Server.
     #[throws]
-    pub fn new(address: &str) -> Server {
+    pub fn new(address: &str) -> Server<E> {
         Server {
             address: address.parse::<SocketAddr>()?,
             routes: Arc::new(RwLock::new(Vec::new())),
@@ -393,7 +396,7 @@ impl Server {
     /// example `"/resource/:key"`; these parameters act as wild cards
     /// that can match any single path segment.
     #[throws]
-    pub fn route(&mut self, route: &str, handler: &'static Handler) {
+    pub fn route(&mut self, route: &str, handler: &'static Handler<E>) {
         let mut iter = route.split_whitespace();
         let method = iter.next().ok_or_else(|| anyhow!("missing method"))?;
         let path = iter.next().ok_or_else(|| anyhow!("missing path"))?;
@@ -427,8 +430,7 @@ impl Server {
     }
 
     /// Send a fake request for testing.
-    #[throws]
-    pub fn test_request(&self, input: &TestRequest) -> TestResponse {
+    pub fn test_request(&self, input: &TestRequest) -> Result<TestResponse, E> {
         let mut req = Request {
             method: input.method.clone(),
             path_params: HashMap::new(),
@@ -440,14 +442,14 @@ impl Server {
             status: StatusCode::Ok,
             resp_headers: HashMap::new(),
         };
-        let path = input.path()?;
+        let path = input.path().unwrap();
         dispatch_request(self.routes.clone(), &path, &mut req)?;
 
-        TestResponse {
+        Ok(TestResponse {
             status: req.status,
             body: req.resp_body,
             headers: convert_header_map_to_unicase(&req.resp_headers),
-        }
+        })
     }
 }
 

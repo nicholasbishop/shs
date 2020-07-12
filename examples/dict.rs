@@ -43,7 +43,7 @@ fn post_dict(req: &mut Request) {
 }
 
 #[throws]
-fn create_server() -> Server {
+fn create_server() -> Server<Error> {
     let mut server = Server::new("127.0.0.1:1234")?;
     server.route("GET /dict/:key", &get_dict)?;
     server.route("POST /dict", &post_dict)?;
