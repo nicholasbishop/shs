@@ -158,8 +158,10 @@ struct Route<E> {
     handler: Box<Handler<E>>,
 }
 
+type Routes<E> = Arc<RwLock<Vec<Route<E>>>>;
+
 fn dispatch_request<E>(
-    routes: Arc<RwLock<Vec<Route<E>>>>,
+    routes: Routes<E>,
     path: &Path,
     req: &mut Request,
 ) -> Result<bool, E> {
@@ -179,10 +181,7 @@ fn dispatch_request<E>(
 }
 
 #[throws]
-fn handle_connection<E: Display>(
-    stream: TcpStream,
-    routes: Arc<RwLock<Vec<Route<E>>>>,
-) {
+fn handle_connection<E: Display>(stream: TcpStream, routes: Routes<E>) {
     let mut stream = BufStream::new(stream);
     let mut line = String::new();
     stream
@@ -378,7 +377,14 @@ fn convert_header_map_to_unicase(
 /// ```
 pub struct Server<E> {
     address: SocketAddr,
-    routes: Arc<RwLock<Vec<Route<E>>>>,
+
+    // The routes type puts the vec behind an Arc<RwLock>. For the
+    // non-test case, the launch() function consumes self, so we could
+    // just move a regular Vec<Route> into the Arc with no RwLock
+    // needed. But test_request does not consume self, since you want
+    // to be able to call test_request multiple times, so a RwLock is
+    // needed.
+    routes: Routes<E>,
 }
 
 impl<E: Display + 'static> Server<E> {
