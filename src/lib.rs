@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 pub use status_code::StatusCode;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 use std::io::{BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::str::FromStr;
@@ -21,6 +21,9 @@ use std::thread;
 use url::Url;
 
 type HeaderName = unicase::UniCase<String>;
+
+/// Requirements for the Server Error type parameter.
+//pub trait ErrorTrait: Debug + Display + 'static {}
 
 /// Request type passed to handlers. It provides both the input
 /// request and the output response, as well as access to state shared
@@ -119,6 +122,11 @@ impl Request {
 /// Handler function for a route.
 pub type Handler<E> = dyn Fn(&mut Request) -> Result<(), E> + Send + Sync;
 
+/// Error handler function.
+pub type ErrorHandler<E> = dyn Fn(&mut Request, &RequestError<E>) + Send + Sync;
+
+type ErrorHandlerArc<E> = Arc<RwLock<ErrorHandler<E>>>;
+
 #[derive(Clone)]
 struct Path {
     parts: Vec<String>,
@@ -160,11 +168,41 @@ struct Route<E> {
 
 type Routes<E> = Arc<RwLock<Vec<Route<E>>>>;
 
-fn dispatch_request<E>(
+/// Errors that can occur when dispatching an error to a handler.
+#[derive(Debug, thiserror::Error)]
+pub enum RequestError<E: Debug + Display> {
+    /// No matching handler found.
+    #[error("not found")]
+    NotFound,
+
+    /// Customer error returned by a handler.
+    #[error("custom: {0}")]
+    Custom(E),
+}
+
+fn default_error_handler<E: Debug + Display>(
+    req: &mut Request,
+    error: &RequestError<E>,
+) {
+    match error {
+        RequestError::NotFound => {
+            error!("not found: {}", req.url().path());
+            req.set_status(StatusCode::NotFound);
+            req.write_text("not found");
+        }
+        RequestError::Custom(err) => {
+            error!("error handling {}: {}", req.url().path(), err);
+            req.set_status(StatusCode::InternalServerError);
+            req.write_text("internal server error");
+        }
+    }
+}
+
+fn dispatch_request<E: Debug + Display>(
     routes: Routes<E>,
     path: &Path,
     req: &mut Request,
-) -> Result<bool, E> {
+) -> Result<(), RequestError<E>> {
     for route in &*routes.read().unwrap() {
         if req.method != route.method {
             continue;
@@ -172,16 +210,20 @@ fn dispatch_request<E>(
 
         if let Some(path_params) = match_path(path, &route.path) {
             req.path_params = path_params;
-            (route.handler)(req)?;
-            return Ok(true);
+            (route.handler)(req).map_err(RequestError::Custom)?;
+            return Ok(());
         }
     }
-    req.status = StatusCode::NotFound;
-    Ok(false)
+
+    Err(RequestError::NotFound)
 }
 
 #[throws]
-fn handle_connection<E: Display>(stream: TcpStream, routes: Routes<E>) {
+fn handle_connection<E: Debug + Display>(
+    stream: TcpStream,
+    routes: Routes<E>,
+    error_handler: ErrorHandlerArc<E>,
+) {
     let mut stream = BufStream::new(stream);
     let mut line = String::new();
     stream
@@ -240,16 +282,8 @@ fn handle_connection<E: Display>(stream: TcpStream, routes: Routes<E>) {
         resp_headers: HashMap::new(),
     };
 
-    match dispatch_request(routes, &path, &mut req) {
-        Err(err) => {
-            error!("{}", err);
-            req.resp_body = "internal server error".into();
-            req.status = StatusCode::InternalServerError;
-        }
-        Ok(false) => {
-            error!("not found: {}", raw_path);
-        }
-        Ok(true) => {}
+    if let Err(err) = dispatch_request(routes, &path, &mut req) {
+        (error_handler.read().unwrap())(&mut req, &err);
     }
 
     stream.write_all(
@@ -375,25 +409,29 @@ fn convert_header_map_to_unicase(
 /// server.launch()?;
 /// # Ok::<(), Error>(())
 /// ```
-pub struct Server<E> {
+pub struct Server<E: Debug + Display> {
     address: SocketAddr,
 
-    // The routes type puts the vec behind an Arc<RwLock>. For the
-    // non-test case, the launch() function consumes self, so we could
-    // just move a regular Vec<Route> into the Arc with no RwLock
-    // needed. But test_request does not consume self, since you want
-    // to be able to call test_request multiple times, so a RwLock is
-    // needed.
+    // The Routes and ErrorHandlerArc types puts the contents behind
+    // an Arc<RwLock>. For the non-test case, the launch() function
+    // consumes self, so we could just move a regular Vec<Route> into
+    // the Arc with no RwLock needed. But test_request does not
+    // consume self, since you want to be able to call test_request
+    // multiple times, so a RwLock is needed.
     routes: Routes<E>,
+    error_handler: ErrorHandlerArc<E>,
 }
 
-impl<E: Display + 'static> Server<E> {
+impl<E: Debug + Display + 'static> Server<E> {
     /// Create a new Server.
     #[throws]
     pub fn new(address: &str) -> Server<E> {
         Server {
             address: address.parse::<SocketAddr>()?,
             routes: Arc::new(RwLock::new(Vec::new())),
+            error_handler: Arc::new(RwLock::new(Box::new(
+                default_error_handler,
+            ))),
         }
     }
 
@@ -414,18 +452,36 @@ impl<E: Display + 'static> Server<E> {
         });
     }
 
+    /// Set a custom error handler.
+    ///
+    /// The default error handler:
+    /// - Logs the error
+    /// - If the error is NotFound, sets the status to NotFound and
+    ///   the body to "not found"
+    /// - If the error is Custom, sets the status to
+    ///   InternalServerError and the body to "internal server error"
+    pub fn set_error_handler(
+        &mut self,
+        error_handler: &'static ErrorHandler<E>,
+    ) {
+        self.error_handler = Arc::new(RwLock::new(Box::new(error_handler)));
+    }
+
     /// Start the server.
     pub fn launch(self) -> Result<(), Error> {
         let listener = TcpListener::bind(self.address)?;
         loop {
             let (tcp_stream, _addr) = listener.accept()?;
             let routes = self.routes.clone();
+            let error_handler = self.error_handler.clone();
 
             // Handle the request in a new thread
             if let Err(err) = thread::Builder::new()
                 .name("shs-handler".into())
                 .spawn(move || {
-                    if let Err(err) = handle_connection(tcp_stream, routes) {
+                    if let Err(err) =
+                        handle_connection(tcp_stream, routes, error_handler)
+                    {
                         error!("{}", err);
                     }
                 })
@@ -436,7 +492,10 @@ impl<E: Display + 'static> Server<E> {
     }
 
     /// Send a fake request for testing.
-    pub fn test_request(&self, input: &TestRequest) -> Result<TestResponse, E> {
+    pub fn test_request(
+        &self,
+        input: &TestRequest,
+    ) -> Result<TestResponse, RequestError<E>> {
         let mut req = Request {
             method: input.method.clone(),
             path_params: HashMap::new(),
