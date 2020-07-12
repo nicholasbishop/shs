@@ -24,9 +24,7 @@ type HeaderName = unicase::UniCase<String>;
 /// Request type passed to handlers. It provides both the input
 /// request and the output response, as well as access to state shared
 /// across requests.
-pub struct Request<T> {
-    state: Arc<RwLock<T>>,
-
+pub struct Request {
     method: String,
     path_params: HashMap<String, String>,
     req_headers: HashMap<HeaderName, String>,
@@ -38,7 +36,7 @@ pub struct Request<T> {
     resp_headers: HashMap<String, String>,
 }
 
-impl<T: Send + Sync> Request<T> {
+impl Request {
     /// Get the request URL.
     pub fn url(&self) -> &Url {
         &self.url
@@ -115,39 +113,10 @@ impl<T: Send + Sync> Request<T> {
             .parse()
             .with_context(|| format!("failed to parse path param {}", name))?
     }
-
-    /// Access shared state via a closure.
-    #[throws]
-    pub fn with_state<R, F>(&self, f: F) -> R
-    where
-        F: Fn(&T) -> R,
-    {
-        match self.state.read() {
-            Ok(guard) => f(&guard),
-            // Can't propagate with `?` here because RwLockReadGuard
-            // cannot be sent between threads
-            Err(err) => throw!(anyhow!("failed to lock state guard: {}", err)),
-        }
-    }
-
-    /// Modify shared state via a closure.
-    #[throws]
-    pub fn with_state_mut<R, F>(&self, f: F) -> R
-    where
-        F: Fn(&mut T) -> R,
-    {
-        match self.state.write() {
-            Ok(mut guard) => f(&mut guard),
-            // Can't propagate with `?` here because RwLockWriteGuard
-            // cannot be sent between threads
-            Err(err) => throw!(anyhow!("failed to lock state guard: {}", err)),
-        }
-    }
 }
 
 /// Handler function for a route.
-pub type Handler<T> =
-    dyn Fn(&mut Request<T>) -> Result<(), Error> + Send + Sync;
+pub type Handler = dyn Fn(&mut Request) -> Result<(), Error> + Send + Sync;
 
 #[derive(Clone)]
 struct Path {
@@ -182,17 +151,17 @@ impl FromStr for Path {
     }
 }
 
-struct Route<T> {
+struct Route {
     method: String,
     path: Path,
-    handler: Box<Handler<T>>,
+    handler: Box<Handler>,
 }
 
 #[throws]
-fn dispatch_request<T>(
-    routes: Arc<RwLock<Vec<Route<T>>>>,
+fn dispatch_request(
+    routes: Arc<RwLock<Vec<Route>>>,
     path: &Path,
-    req: &mut Request<T>,
+    req: &mut Request,
 ) -> bool {
     for route in &*routes.read().unwrap() {
         if req.method != route.method {
@@ -210,11 +179,7 @@ fn dispatch_request<T>(
 }
 
 #[throws]
-fn handle_connection<T>(
-    stream: TcpStream,
-    routes: Arc<RwLock<Vec<Route<T>>>>,
-    state: Arc<RwLock<T>>,
-) {
+fn handle_connection(stream: TcpStream, routes: Arc<RwLock<Vec<Route>>>) {
     let mut stream = BufStream::new(stream);
     let mut line = String::new();
     stream
@@ -262,8 +227,6 @@ fn handle_connection<T>(
     url.set_path(raw_path);
 
     let mut req = Request {
-        state,
-
         method: method.into(),
         path_params: HashMap::new(),
         req_headers: headers,
@@ -401,29 +364,27 @@ fn convert_header_map_to_unicase(
 /// use shs::{Request, Server};
 ///
 /// #[throws]
-/// fn handler(req: &mut Request<()>) {
+/// fn handler(req: &mut Request) {
 ///     todo!();
 /// }
 ///
-/// let mut server = Server::new("127.0.0.1:1234", ())?;
+/// let mut server = Server::new("127.0.0.1:1234")?;
 /// server.route("GET /hello", &handler)?;
 /// server.launch()?;
 /// # Ok::<(), Error>(())
 /// ```
-pub struct Server<T> {
+pub struct Server {
     address: SocketAddr,
-    routes: Arc<RwLock<Vec<Route<T>>>>,
-    state: Arc<RwLock<T>>,
+    routes: Arc<RwLock<Vec<Route>>>,
 }
 
-impl<T: Send + Sync + 'static> Server<T> {
+impl Server {
     /// Create a new Server.
     #[throws]
-    pub fn new(address: &str, state: T) -> Server<T> {
+    pub fn new(address: &str) -> Server {
         Server {
             address: address.parse::<SocketAddr>()?,
             routes: Arc::new(RwLock::new(Vec::new())),
-            state: Arc::new(RwLock::new(state)),
         }
     }
 
@@ -432,7 +393,7 @@ impl<T: Send + Sync + 'static> Server<T> {
     /// example `"/resource/:key"`; these parameters act as wild cards
     /// that can match any single path segment.
     #[throws]
-    pub fn route(&mut self, route: &str, handler: &'static Handler<T>) {
+    pub fn route(&mut self, route: &str, handler: &'static Handler) {
         let mut iter = route.split_whitespace();
         let method = iter.next().ok_or_else(|| anyhow!("missing method"))?;
         let path = iter.next().ok_or_else(|| anyhow!("missing path"))?;
@@ -444,30 +405,18 @@ impl<T: Send + Sync + 'static> Server<T> {
         });
     }
 
-    /// Get the shared application state.
-    ///
-    /// This is useful if you are spawning additional worker threads
-    /// that will also use this state.
-    pub fn state(&self) -> Arc<RwLock<T>> {
-        self.state.clone()
-    }
-
     /// Start the server.
     pub fn launch(self) -> Result<(), Error> {
         let listener = TcpListener::bind(self.address)?;
-        let routes = self.routes.clone();
         loop {
             let (tcp_stream, _addr) = listener.accept()?;
-            let routes = routes.clone();
-            let state = self.state.clone();
+            let routes = self.routes.clone();
 
             // Handle the request in a new thread
             if let Err(err) = thread::Builder::new()
                 .name("shs-handler".into())
                 .spawn(move || {
-                    if let Err(err) =
-                        handle_connection(tcp_stream, routes, state)
-                    {
+                    if let Err(err) = handle_connection(tcp_stream, routes) {
                         error!("{}", err);
                     }
                 })
@@ -481,8 +430,6 @@ impl<T: Send + Sync + 'static> Server<T> {
     #[throws]
     pub fn test_request(&self, input: &TestRequest) -> TestResponse {
         let mut req = Request {
-            state: self.state.clone(),
-
             method: input.method.clone(),
             path_params: HashMap::new(),
             req_headers: convert_header_map_to_unicase(&input.headers),

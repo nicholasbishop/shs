@@ -1,13 +1,13 @@
 use anyhow::Error;
 use fehler::throws;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use shs::{Request, Server};
 use std::collections::HashMap;
+use std::sync::RwLock;
 
-#[derive(Default)]
-struct State {
-    dict: HashMap<String, String>,
-}
+static DICT: Lazy<RwLock<HashMap<String, String>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
 struct DictItem {
@@ -25,9 +25,9 @@ impl DictItem {
 }
 
 #[throws]
-fn get_dict(req: &mut Request<State>) {
+fn get_dict(req: &mut Request) {
     let key: String = req.path_param("key")?;
-    if let Some(value) = req.with_state(|s| s.dict.get(&key).cloned())? {
+    if let Some(value) = DICT.read().unwrap().get(&key).cloned() {
         req.write_json(&DictItem::new(&key, &value))?;
     } else {
         req.set_not_found();
@@ -35,16 +35,16 @@ fn get_dict(req: &mut Request<State>) {
 }
 
 #[throws]
-fn post_dict(req: &mut Request<State>) {
+fn post_dict(req: &mut Request) {
     let body: DictItem = req.read_json()?;
-    req.with_state_mut(|s| {
-        s.dict.insert(body.key.clone(), body.value.clone())
-    })?;
+    DICT.write()
+        .unwrap()
+        .insert(body.key.clone(), body.value.clone());
 }
 
 #[throws]
-fn create_server() -> Server<State> {
-    let mut server = Server::new("127.0.0.1:1234", State::default())?;
+fn create_server() -> Server {
+    let mut server = Server::new("127.0.0.1:1234")?;
     server.route("GET /dict/:key", &get_dict)?;
     server.route("POST /dict", &post_dict)?;
     server
